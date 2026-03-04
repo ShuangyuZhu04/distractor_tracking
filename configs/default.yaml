@@ -1,0 +1,143 @@
+# ============================================================
+# 基于背景干扰物挖掘的目标跟踪算法 — 默认配置
+# ============================================================
+
+# -------------------- 基础设置 --------------------
+system:
+  seed: 42                    # 随机种子，保证实验可复现
+  device: "cuda:0"            # 运行设备 ("cuda:0" / "cpu")
+  num_workers: 4              # 数据加载线程数
+  log_dir: "logs/"            # 日志输出目录
+  checkpoint_dir: "checkpoints/" # checkpoints保存目录
+
+# -------------------- 骨干网络 --------------------
+backbone:
+  type: "resnet50"            # 骨干网络类型: "resnet50" / "mobilenetv3"
+  pretrained: true            # 是否加载 ImageNet 预训练权重
+  frozen_stages: 2            # 冻结前 N 个 stage（减少显存 & 加速训练）
+  output_layers:              # 输出特征层 (空洞卷积使所有层 stride=8)
+    - "layer2"                # stride = 8,  channels = 512
+    - "layer3"                # stride = 8,  channels = 1024 (dilated)
+    - "layer4"                # stride = 8,  channels = 2048 (dilated)
+
+# -------------------- CBAM 注意力模块 --------------------
+cbam:
+  enabled: true               # 是否启用 CBAM
+  reduction_ratio: 16         # 通道注意力的压缩比
+  spatial_kernel_size: 7      # 空间注意力的卷积核大小
+  insert_after: "layer3"      # CBAM 插入位置（搜索分支特征提取之后）
+
+# -------------------- RPN 头 --------------------
+rpn:
+  anchor_scales: [8]          # 锚框尺度
+  anchor_ratios: [0.33, 0.5, 1.0, 2.0, 3.0]  # 锚框宽高比
+  in_channels: 256            # 输入特征通道数（经 neck 调整后）
+  cls_out_channels: 2         # 分类输出（前景 / 背景）
+  weighted_sample: true       # 是否对正负样本加权采样
+
+# -------------------- 跟踪器 --------------------
+tracker:
+  template_size: 127          # 模板帧裁剪尺寸 (像素)
+  search_size: 255            # 搜索区域裁剪尺寸 (像素)
+  context_amount: 0.5         # 上下文扩展比例
+  stride: 8                   # 特征步长
+  score_threshold: 0.5        # 跟踪置信度阈值（低于此值触发重检测）
+  penalty_k: 0.055            # 尺度/比例惩罚系数 (SiamRPN++ 论文默认值)
+  window_influence: 0.40      # 余弦窗惩罚权重（平滑跟踪框）
+  lr: 0.35                    # 跟踪框尺度学习率（平滑尺度变化）
+  feature_stride: 16          # layer3 特征图相对模型输入的降采样率
+
+# -------------------- 干扰物挖掘 --------------------
+distractor:
+  enabled: true               # 是否启用干扰物挖掘模块
+  # --- 检测参数 ---
+  search_radius: 80           # 干扰物搜索半径（以跟踪框中心为圆心，像素）
+  attention_threshold: 0.3    # CBAM 关注度阈值（低于此值视为背景区域）
+  # --- 分类阈值 ---
+  similarity_high: 0.6        # 高相似干扰物阈值（特征相似度 >= 此值）
+  dynamic_displacement: 10    # 动态干扰物阈值（帧间位移 >= 此值，像素）
+  occlusion_overlap: 0.3      # 遮挡型干扰物阈值（与目标 IoU >= 此值）
+  # --- 特征权重 ---
+  hog_weight: 0.4             # HOG 特征相似度权重
+  cnn_weight: 0.6             # CNN 特征相似度权重
+  max_distractors: 10         # 单帧最大干扰物保留数
+  roi_output_size: 7          # roi_align 输出空间尺寸（7×7 → avg_pool → 1D 向量）
+
+# -------------------- 融合优化 --------------------
+fusion:
+  enabled: true               # 是否启用融合优化模块
+  # --- 搜索范围调整 ---
+  shrink_ratio: 0.7           # 高相似干扰物场景下搜索范围收缩比例
+  # --- 遮挡重检测 ---
+  redetect_score_thr: 0.5     # 触发重检测的置信度阈值
+  redetect_expand: 2.0        # 重检测时搜索区域扩展倍数
+  # --- 损失函数 ---
+  distractor_loss_weight: 2.0 # 干扰物区域损失倍率
+
+# -------------------- 训练 --------------------
+train:
+  epochs: 50
+  batch_size: 16
+  lr: 0.0002                  # 学习率
+  backbone_lr_mult: 0.1       # Backbone 学习率 = lr × 0.1 = 2e-5
+  lr_scheduler: "cosine"      # 学习率调度: "step" / "cosine"
+  weight_decay: 0.0001 
+  warmup_epochs: 5            # 学习率预热轮数
+  early_stop_patience: 10     # 早停耐心值（连续多少 epoch 验证性能无提升则停止训练）
+  grad_clip: 10.0             # 梯度裁剪阈值
+  datasets:                   # 训练数据集列表
+    - "got10k"           # ~9,335 序列, SiamRPN++ 论文标准训练集
+    # - "lasot"          # ~1,400 序列, 大规模长时跟踪
+    # - "otb100"
+  # --- Anchor 标签分配 ---
+  score_size: 17              # score map 尺寸 = (255-127)/8+1
+  pos_iou_thr: 0.6            # 正样本 IoU 阈值
+  neg_iou_thr: 0.3            # 负样本 IoU 阈值
+  anchor_sample_num: 64       # 每样本采样 anchor 总数
+  anchor_pos_ratio: 0.35      # 正样本占比
+  # --- 训练数据采样 ---
+  max_frame_gap: 100          # 模板帧与搜索帧的最大帧间距
+  pairs_per_sequence: 20      # 每个序列每 epoch 采样帧对数                    
+  shift_ratio: 0.25           # 搜索区域平移比例 (占 base_crop_size 的比例)
+  # --- 损失权重 ---
+  cls_loss_weight: 1.0
+  reg_loss_weight: 1.2
+  label_smoothing: 0.1        # 标签平滑, 防止过拟合到完美分类
+  dist_loss_weight: 1.0       # 干扰物挖掘损失权重
+  max_distractor_anchors: 24  # 最大干扰物 anchor 数
+
+# -------------------- 评估 --------------------
+evaluate:
+  datasets:                   # 评估数据集列表
+    - "otb100"
+    - "uav123"
+    - "vot2022"
+    - "got10k_val"
+  metrics:                    # 评估指标
+    - "success"               # 成功率 (AUC)
+    - "precision"             # 精确度
+    - "normalized_precision"  # 归一化精确度
+    - "fps"                   # 帧率
+
+# -------------------- 数据集路径 --------------------
+datasets:
+  # --- 训练集 (大规模) ---
+  got10k:
+    root: "data/GOT-10k/"     
+    type: "got10k"
+  lasot:
+    root: "data/LaSOT/"      
+    type: "lasot"
+  # --- 测试集 (仅评估, 不参与训练) ---
+  got10k_val:
+    root: "data/GOT-10k/val"
+    type: "got10k"
+  otb100:
+    root: "data/OTB100/"
+    type: "otb"
+  uav123:
+    root: "data/UAV123/"
+    type: "uav"
+  vot2022:
+    root: "data/VOT2022/"
+    type: "vot"
