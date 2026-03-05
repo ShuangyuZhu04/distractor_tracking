@@ -58,16 +58,6 @@ distractor_tracking/
 └── README.md
 ```
 
-## 快速开始
-
-```bash
-# 训练模型
-
-
-# 在 got10k 的val集上评估
-
-```
-
 ## 1. 环境准备
 
 ```bash
